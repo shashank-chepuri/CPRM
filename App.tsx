@@ -511,11 +511,17 @@ const RadiationScreen = ({ navigation }: { navigation: any }) => {
   }, [showCalibrationEdit, tempCalibrationFactor]);
 
   // Initialize lookup data with calibration table
-  useEffect(() => {
-    if (showLookupTable) {
-      setLookupData([...cpsToDoseMap]);
+  // Initialize lookup data with calibration table plus 2 empty rows
+useEffect(() => {
+  if (showLookupTable) {
+    // Create a copy of the current mapping and add 2 empty rows at the end
+    const extendedData = [...cpsToDoseMap];
+    for (let i = 0; i < 2; i++) {
+      extendedData.push({ cps: 0, dose: 0 });
     }
-  }, [showLookupTable, cpsToDoseMap]);
+    setLookupData(extendedData);
+  }
+}, [showLookupTable, cpsToDoseMap]);
 
   // Alarm monitoring
   useEffect(() => {
@@ -615,12 +621,16 @@ const RadiationScreen = ({ navigation }: { navigation: any }) => {
     setEditValue('');
   };
 
-  const handleSetLookupTable = () => {
-    setCpsToDoseMap([...lookupData]);
-    Alert.alert("Calibration Updated", "The new CPS to Dose mapping has been applied");
-    setShowLookupTable(false);
-    setShowPrgMenu(true);
-  };
+ const handleSetLookupTable = () => {
+  // Filter out empty rows but keep the first row (0, 0) even if it's (0, 0)
+  const filteredData = lookupData.filter((item, index) => 
+    index === 0 || item.cps !== 0 || item.dose !== 0
+  );
+  setCpsToDoseMap(filteredData);
+  Alert.alert("Calibration Updated", "The new CPS to Dose mapping has been applied");
+  setShowLookupTable(false);
+  setShowPrgMenu(true);
+};
 
   // Arrow Up
   const handleUpArrow = () => {
@@ -710,69 +720,107 @@ const RadiationScreen = ({ navigation }: { navigation: any }) => {
     if (!showPrgMenu) { setSelectedOption(0); setVisibleOptions(4); }
   };
 
-  const handleEntSrtPress = () => {
-    ReactNativeHapticFeedback.trigger("impactHeavy");
+ const handleEntSrtPress = () => {
+  ReactNativeHapticFeedback.trigger("impactHeavy");
 
-    // Handle calibration digit selection
-    if (showCalibrationEdit) {
-      if (selectedDigitIndex < 2) {
-        setSelectedDigitIndex(selectedDigitIndex + 1);
-      } else {
-        setSelectedDigitIndex(0);
-      }
-      return;
+  // Handle calibration digit selection
+  if (showCalibrationEdit) {
+    if (selectedDigitIndex < 2) {
+      setSelectedDigitIndex(selectedDigitIndex + 1);
+    } else {
+      setSelectedDigitIndex(0);
     }
+    return;
+  }
 
-    // Menu selections
-    if (showAlarmSetPoint) { 
-      setTempAlarmSetPoint(alarmSetPointOptions[alarmSetPointIndex]); 
-      setShowAlarmSetPoint(false); 
-      setShowPrgMenu(true); 
-      return; 
-    }
-    if (showUnitSelect) { setTempUnit(unitOptions[unitIndex]); setShowUnitSelect(false); setShowPrgMenu(true); return; }
-    if (showCumDoseReset) { if (cumDoseResetIndex === 0) setCumulativeDose(0); setShowCumDoseReset(false); setShowPrgMenu(true); return; }
-    if (showCumDoseModeSelect) { setTempCumDoseMode(cumDoseModeIndex === 0 ? "Auto" : "Manual"); setShowCumDoseModeSelect(false); setShowPrgMenu(true); return; }
-    if (showSaveConfirmation) { setShowSaveConfirmation(false); return; }
-    if (showLookupTable) return;
+  // Menu selections
+  if (showAlarmSetPoint) { 
+    setTempAlarmSetPoint(alarmSetPointOptions[alarmSetPointIndex]); 
+    setShowAlarmSetPoint(false); 
+    setShowPrgMenu(true); 
+    return; 
+  }
+  if (showUnitSelect) { 
+    setTempUnit(unitOptions[unitIndex]); 
+    setShowUnitSelect(false); 
+    setShowPrgMenu(true); 
+    return; 
+  }
+  if (showCumDoseReset) { 
+    if (cumDoseResetIndex === 0) setCumulativeDose(0); 
+    setShowCumDoseReset(false); 
+    setShowPrgMenu(true); 
+    return; 
+  }
+  if (showCumDoseModeSelect) { 
+    setTempCumDoseMode(cumDoseModeIndex === 0 ? "Auto" : "Manual"); 
+    setShowCumDoseModeSelect(false); 
+    setShowPrgMenu(true); 
+    return; 
+  }
+  if (showSaveConfirmation) { 
+    setShowSaveConfirmation(false); 
+    return; 
+  }
+  if (showLookupTable) return;
 
-    // Manual Mode logic
-    if (autoManualMode === 'Manual' && !showPrgMenu) {
-      if (!isManualDoseActive) {
-        if (manualButtonState === 'restart') {
-          setCumulativeDose(0);
-        }
-        setIsManualDoseActive(true);
-        setManualButtonState('stop');
-      } else {
+  // Manual Mode logic
+  if (autoManualMode === 'Manual' && !showPrgMenu) {
+    if (!isManualDoseActive) {
+      if (manualButtonState === 'restart') {
         setCumulativeDose(0);
-        setIsManualDoseActive(true);
       }
-      return;
+      setIsManualDoseActive(true);
+      setManualButtonState('stop');
+    } else {
+      setCumulativeDose(0);
+      setIsManualDoseActive(true);
     }
+    return;
+  }
 
-    // Default: open PRG menu
-    if (!showPrgMenu) {
-      setShowPrgMenu(true);
-      setSelectedOption(0);
-      setVisibleOptions(4);
-      return;
-    }
-
-    // PRG menu selections
+  // ✅ Allow ENT/SRT to work *only if PRG menu is open*
+  if (showPrgMenu) {
     switch (selectedOption) {
-      case 0: setShowUnitSelect(true); setShowPrgMenu(false); setUnitIndex(unitOptions.indexOf(tempUnit)); break;
-      case 1: setShowAlarmSetPoint(true); setShowPrgMenu(false); 
-              // Find the closest matching option index
-              const closestIndex = alarmSetPointOptions.reduce((prev, curr, index) => 
-                Math.abs(curr - tempAlarmSetPoint) < Math.abs(alarmSetPointOptions[prev] - tempAlarmSetPoint) ? index : prev, 0);
-              setAlarmSetPointIndex(closestIndex);
-              break;
-      case 2: setShowCalibrationEdit(true); setShowPrgMenu(false); break;
-      case 3: setShowCumDoseReset(true); setShowPrgMenu(false); break;
-      case 4: setShowCumDoseModeSelect(true); setShowPrgMenu(false); setCumDoseModeIndex(tempCumDoseMode === 'Auto' ? 0 : 1); break;
-      case 5: setShowLookupTable(true); setShowPrgMenu(false); break;
-      case 6: exportData(logData); setShowPrgMenu(false); break;
+      case 0:
+        setShowUnitSelect(true);
+        setShowPrgMenu(false);
+        setUnitIndex(unitOptions.indexOf(tempUnit));
+        break;
+      case 1:
+        setShowAlarmSetPoint(true);
+        setShowPrgMenu(false);
+        const closestIndex = alarmSetPointOptions.reduce(
+          (prev, curr, index) =>
+            Math.abs(curr - tempAlarmSetPoint) <
+            Math.abs(alarmSetPointOptions[prev] - tempAlarmSetPoint)
+              ? index
+              : prev,
+          0
+        );
+        setAlarmSetPointIndex(closestIndex);
+        break;
+      case 2:
+        setShowCalibrationEdit(true);
+        setShowPrgMenu(false);
+        break;
+      case 3:
+        setShowCumDoseReset(true);
+        setShowPrgMenu(false);
+        break;
+      case 4:
+        setShowCumDoseModeSelect(true);
+        setShowPrgMenu(false);
+        setCumDoseModeIndex(tempCumDoseMode === 'Auto' ? 0 : 1);
+        break;
+      case 5:
+        setShowLookupTable(true);
+        setShowPrgMenu(false);
+        break;
+      case 6:
+        exportData(logData);
+        setShowPrgMenu(false);
+        break;
       case 7:
         setSelectedUnit(tempUnit);
         setAlarmSetPoint(tempAlarmSetPoint);
@@ -781,9 +829,14 @@ const RadiationScreen = ({ navigation }: { navigation: any }) => {
         setShowPrgMenu(false);
         setShowSaveConfirmation(true);
         break;
-      default: Alert.alert(PRG_OPTIONS[selectedOption], 'Not implemented.');
+      default:
+        Alert.alert(PRG_OPTIONS[selectedOption], 'Not implemented.');
     }
-  };
+  }
+
+  // ❌ Do nothing if no menu and no manual logic
+};
+
 
   const handleExtStpPress = () => {
     ReactNativeHapticFeedback.trigger("impactMedium");
@@ -930,44 +983,54 @@ const RadiationScreen = ({ navigation }: { navigation: any }) => {
               </View>
               <ScrollView style={pixelPerfectStyles.lookupScroll}>
                 {lookupData.map((item, index) => (
-                  <View key={index} style={pixelPerfectStyles.lookupRow}>
-                    {editingCell?.row === index && editingCell.col === 0 ? (
-                      <TextInput
-                        style={pixelPerfectStyles.lookupInput}
-                        value={editValue}
-                        onChangeText={handleLookupEditChange}
-                        onBlur={handleLookupEditComplete}
-                        keyboardType="numeric"
-                        autoFocus
-                      />
-                    ) : (
-                      <Pressable 
-                        style={pixelPerfectStyles.lookupCell}
-                        onPress={() => handleLookupCellPress(index, 0)}
-                      >
-                        <Text style={pixelPerfectStyles.lookupCellText}>{item.cps}</Text>
-                      </Pressable>
-                    )}
-                    
-                    {editingCell?.row === index && editingCell.col === 1 ? (
-                      <TextInput
-                        style={pixelPerfectStyles.lookupInput}
-                        value={editValue}
-                        onChangeText={handleLookupEditChange}
-                        onBlur={handleLookupEditComplete}
-                        keyboardType="numeric"
-                        autoFocus
-                      />
-                    ) : (
-                      <Pressable 
-                        style={pixelPerfectStyles.lookupCell}
-                        onPress={() => handleLookupCellPress(index, 1)}
-                      >
-                        <Text style={pixelPerfectStyles.lookupCellText}>{item.dose}</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                ))}
+  <View key={index} style={pixelPerfectStyles.lookupRow}>
+    {editingCell?.row === index && editingCell.col === 0 ? (
+      <TextInput
+        style={pixelPerfectStyles.lookupInput}
+        value={editValue}
+        onChangeText={handleLookupEditChange}
+        onBlur={handleLookupEditComplete}
+        keyboardType="numeric"
+        autoFocus
+      />
+    ) : (
+      <Pressable 
+        style={pixelPerfectStyles.lookupCell}
+        onPress={() => handleLookupCellPress(index, 0)}
+      >
+        <Text style={[
+          pixelPerfectStyles.lookupCellText,
+          item.cps === 0 && index > 0 && pixelPerfectStyles.placeholderText
+        ]}>
+          {item.cps !== 0 || index === 0 ? item.cps : "Tap to add"}
+        </Text>
+      </Pressable>
+    )}
+    
+    {editingCell?.row === index && editingCell.col === 1 ? (
+      <TextInput
+        style={pixelPerfectStyles.lookupInput}
+        value={editValue}
+        onChangeText={handleLookupEditChange}
+        onBlur={handleLookupEditComplete}
+        keyboardType="numeric"
+        autoFocus
+      />
+    ) : (
+      <Pressable 
+        style={pixelPerfectStyles.lookupCell}
+        onPress={() => handleLookupCellPress(index, 1)}
+      >
+        <Text style={[
+          pixelPerfectStyles.lookupCellText,
+          item.dose === 0 && index > 0 && pixelPerfectStyles.placeholderText
+        ]}>
+          {item.dose !== 0 || index === 0 ? item.dose : "Tap to add"}
+        </Text>
+      </Pressable>
+    )}
+  </View>
+))}
               </ScrollView>
               <Pressable 
                 style={pixelPerfectStyles.setButton}
@@ -1531,6 +1594,10 @@ setButtonText: {
   color: 'white',
   fontSize: 16,
   fontWeight: 'bold',
+},
+placeholderText: {
+  color: '#999',
+  fontStyle: 'italic',
 },
 
 });
