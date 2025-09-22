@@ -1,8 +1,5 @@
-
 // --- Part 1: Imports, Helpers, Context, Home Screen ---
-
-// --- Part 1: Imports, Helpers, Context, Home Screen ---
-
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Buffer } from 'buffer';
 import React, { useEffect, useState, createContext, useContext, useRef } from 'react';
 import {
@@ -133,6 +130,17 @@ const getAndroidFileUri = async (filePath: string) => {
   }
 };
 
+// AsyncStorage keys
+const STORAGE_KEYS = {
+  CALIBRATION_FACTOR: 'calibrationFactor',
+  ALARM_SET_POINT: 'alarmSetPoint',
+  SELECTED_UNIT: 'selectedUnit',
+  AUTO_MANUAL_MODE: 'autoManualMode',
+  CPS_TO_DOSE_MAP: 'cpsToDoseMap',
+  CUMULATIVE_DOSE: 'cumulativeDose',
+  LOG_DATA: 'logData'
+};
+
 type RadiationContextType = {
   radiationValue: string;
   setRadiationValue: React.Dispatch<React.SetStateAction<string>>;
@@ -157,6 +165,8 @@ type RadiationContextType = {
   isAlarmActive: boolean;
   setIsAlarmActive: React.Dispatch<React.SetStateAction<boolean>>;
   alarmSetPointOptions: number[];
+  saveSettings: () => Promise<void>;
+  loadSettings: () => Promise<void>;
 };
 
 const RadiationContext = createContext<RadiationContextType | null>(null);
@@ -195,6 +205,75 @@ const RadiationProvider: React.FC<{ children: React.ReactNode }> = ({ children }
     { cps: 22500, dose: 10000 },
   ]);
 
+  // Save settings to AsyncStorage
+  const saveSettings = async () => {
+    try {
+      await AsyncStorage.multiSet([
+        [STORAGE_KEYS.CALIBRATION_FACTOR, calibrationFactor.toString()],
+        [STORAGE_KEYS.ALARM_SET_POINT, alarmSetPoint.toString()],
+        [STORAGE_KEYS.SELECTED_UNIT, selectedUnit],
+        [STORAGE_KEYS.AUTO_MANUAL_MODE, autoManualMode],
+        [STORAGE_KEYS.CPS_TO_DOSE_MAP, JSON.stringify(cpsToDoseMap)],
+        [STORAGE_KEYS.CUMULATIVE_DOSE, cumulativeDose.toString()],
+        [STORAGE_KEYS.LOG_DATA, JSON.stringify(logData)]
+      ]);
+      console.log('Settings saved successfully');
+    } catch (error) {
+      console.error('Error saving settings:', error);
+    }
+  };
+
+  // Load settings from AsyncStorage
+  const loadSettings = async () => {
+    try {
+      const values = await AsyncStorage.multiGet([
+        STORAGE_KEYS.CALIBRATION_FACTOR,
+        STORAGE_KEYS.ALARM_SET_POINT,
+        STORAGE_KEYS.SELECTED_UNIT,
+        STORAGE_KEYS.AUTO_MANUAL_MODE,
+        STORAGE_KEYS.CPS_TO_DOSE_MAP,
+        STORAGE_KEYS.CUMULATIVE_DOSE,
+        STORAGE_KEYS.LOG_DATA
+      ]);
+
+      const [
+        calibrationFactorValue,
+        alarmSetPointValue,
+        selectedUnitValue,
+        autoManualModeValue,
+        cpsToDoseMapValue,
+        cumulativeDoseValue,
+        logDataValue
+      ] = values;
+
+      if (calibrationFactorValue[1]) setCalibrationFactor(parseFloat(calibrationFactorValue[1]));
+      if (alarmSetPointValue[1]) setAlarmSetPoint(parseFloat(alarmSetPointValue[1]));
+      if (selectedUnitValue[1]) setSelectedUnit(selectedUnitValue[1]);
+      if (autoManualModeValue[1]) setAutoManualMode(autoManualModeValue[1] as 'Auto' | 'Manual');
+      if (cpsToDoseMapValue[1]) setCpsToDoseMap(JSON.parse(cpsToDoseMapValue[1]));
+      if (cumulativeDoseValue[1]) setCumulativeDose(parseFloat(cumulativeDoseValue[1]));
+      if (logDataValue[1]) setLogData(JSON.parse(logDataValue[1]));
+
+      console.log('Settings loaded successfully');
+    } catch (error) {
+      console.error('Error loading settings:', error);
+    }
+  };
+
+  // Load settings on app start
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  // Auto-save settings when they change
+  useEffect(() => {
+    const saveTimeout = setTimeout(() => {
+      saveSettings();
+    }, 1000); // Debounce to avoid too frequent saves
+
+    return () => clearTimeout(saveTimeout);
+  }, [calibrationFactor, alarmSetPoint, selectedUnit, autoManualMode, cpsToDoseMap, cumulativeDose, logData]);
+
   // Clean up sound on unmount
   useEffect(() => {
     return () => {
@@ -219,7 +298,9 @@ const RadiationProvider: React.FC<{ children: React.ReactNode }> = ({ children }
         bufferedDose, setBufferedDose,
         cpsToDoseMap, setCpsToDoseMap,
         isAlarmActive, setIsAlarmActive,
-        alarmSetPointOptions
+        alarmSetPointOptions,
+        saveSettings,
+        loadSettings
       }}
     >
       {children}
@@ -436,7 +517,8 @@ const RadiationScreen = ({ navigation }: { navigation: any }) => {
     setCpsToDoseMap,
     isAlarmActive,
     setIsAlarmActive,
-    alarmSetPointOptions
+    alarmSetPointOptions,
+    saveSettings
   } = useRadiation();
 
   const [cpsBuffer, setCpsBuffer] = useState<number[]>([]);
@@ -828,6 +910,8 @@ useEffect(() => {
         setAutoManualMode(tempCumDoseMode);
         setShowPrgMenu(false);
         setShowSaveConfirmation(true);
+        // Save settings when parameters are saved
+        saveSettings();
         break;
       default:
         Alert.alert(PRG_OPTIONS[selectedOption], 'Not implemented.');
