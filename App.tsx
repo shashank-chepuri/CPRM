@@ -376,56 +376,64 @@ const HomeScreen = ({ navigation }: { navigation: any }) => {
     }, true);
   };
 
-  const connectToDevice = async (device: Device) => {
-    try {
-      await bleManager.stopDeviceScan();
-      const connected = await device.connect();
-      await connected.discoverAllServicesAndCharacteristics();
+ const connectToDevice = async (device: Device) => {
+  try {
+    await bleManager.stopDeviceScan();
+    await new Promise(res => setTimeout(res, 300)); // small delay for stability
 
-      let hasValidated = false;
-      let validationTimeout: NodeJS.Timeout;
+    const connected = await device.connect();
+    await connected.discoverAllServicesAndCharacteristics();
 
-      connected.monitorCharacteristicForService(
-        SERVICE_UUID,
-        CHARACTERISTIC_UUID,
-        (error, characteristic) => {
-          if (error) {
-            console.log('Notification error:', error);
-            return;
+    // Debug: check discovered services
+    const services = await connected.services();
+    console.log("Discovered services:", services.map(s => s.uuid));
+
+    let hasValidated = false;
+    let validationTimeout: NodeJS.Timeout;
+
+    connected.monitorCharacteristicForService(
+      SERVICE_UUID,
+      CHARACTERISTIC_UUID,
+      (error, characteristic) => {
+        if (error) {
+          console.log('Notification error:', error);
+          return;
+        }
+
+        if (characteristic?.value) {
+          const decoded = Buffer.from(characteristic.value, 'base64').toString('utf-8');
+          console.log('Raw BLE data:', decoded);
+
+          // Accept device as valid on *first notification*
+          if (!hasValidated) {
+            hasValidated = true;
+            clearTimeout(validationTimeout);
+            setConnectedDevice(connected);
+            navigation.navigate('Radiation');
           }
 
-          if (characteristic?.value) {
-            const decoded = Buffer.from(characteristic.value, 'base64').toString('utf-8');
-            console.log('Raw BLE data:', decoded);
-
-            const cpsMatch = decoded.match(/Cnts:(\d+)!/);
-            if (cpsMatch) {
-              const cps = cpsMatch[1];
-              setRadiationValue(cps);
-
-              if (!hasValidated) {
-                hasValidated = true;
-                clearTimeout(validationTimeout);
-                setConnectedDevice(connected);
-                navigation.navigate('Radiation');
-              }
-            }
+          // Parse CPS if format matches
+          const cpsMatch = decoded.match(/Cnts:(\d+)!/);
+          if (cpsMatch) {
+            setRadiationValue(cpsMatch[1]);
           }
         }
-      );
+      }
+    );
 
-      validationTimeout = setTimeout(async () => {
-        if (!hasValidated) {
-          Alert.alert('Invalid Device', 'Please connect to a valid device.');
-          await connected.cancelConnection();
-        }
-      }, 5000);
+    // Extended timeout (10s instead of 5s)
+    validationTimeout = setTimeout(async () => {
+      if (!hasValidated) {
+        Alert.alert('Invalid Device', 'Please connect to a valid device.');
+        await connected.cancelConnection();
+      }
+    }, 30000);
 
-    } catch (error) {
-      console.log('Connection error:', error);
-      Alert.alert('Connection Failed', 'Could not connect to device');
-    }
-  };
+  } catch (error) {
+    console.log('Connection error:', error);
+  }
+};
+
 
   return (
     <View style={styles.container}>
@@ -703,16 +711,24 @@ useEffect(() => {
     setEditValue('');
   };
 
- const handleSetLookupTable = () => {
-  // Filter out empty rows but keep the first row (0, 0) even if it's (0, 0)
-  const filteredData = lookupData.filter((item, index) => 
-    index === 0 || item.cps !== 0 || item.dose !== 0
-  );
-  setCpsToDoseMap(filteredData);
+const handleSetLookupTable = async () => {
+  // Use functional update to ensure we have the freshest state
+  setCpsToDoseMap(prev => {
+    const filteredData = lookupData.filter((item, index) => 
+      index === 0 || item.cps !== 0 || item.dose !== 0
+    );
+    return [...filteredData];
+  });
+
+  // 🔥 Save immediately after updating
+  await saveSettings();
+
   Alert.alert("Calibration Updated", "The new CPS to Dose mapping has been applied");
   setShowLookupTable(false);
   setShowPrgMenu(true);
 };
+
+
 
   // Arrow Up
   const handleUpArrow = () => {
@@ -1092,27 +1108,31 @@ useEffect(() => {
     )}
     
     {editingCell?.row === index && editingCell.col === 1 ? (
-      <TextInput
-        style={pixelPerfectStyles.lookupInput}
-        value={editValue}
-        onChangeText={handleLookupEditChange}
-        onBlur={handleLookupEditComplete}
-        keyboardType="numeric"
-        autoFocus
-      />
-    ) : (
-      <Pressable 
-        style={pixelPerfectStyles.lookupCell}
-        onPress={() => handleLookupCellPress(index, 1)}
-      >
-        <Text style={[
-          pixelPerfectStyles.lookupCellText,
-          item.dose === 0 && index > 0 && pixelPerfectStyles.placeholderText
-        ]}>
-          {item.dose !== 0 || index === 0 ? item.dose : "Tap to add"}
-        </Text>
-      </Pressable>
-    )}
+  <TextInput
+    style={pixelPerfectStyles.lookupInput}
+    value={String(item.dose)}
+    onChangeText={(text) => {
+      const updated = [...lookupData];
+      updated[index].dose = Number(text) || 0;
+      setLookupData(updated); // 🔥 updates immediately
+    }}
+    keyboardType="numeric"
+    autoFocus
+  />
+) : (
+  <Pressable 
+    style={pixelPerfectStyles.lookupCell}
+    onPress={() => handleLookupCellPress(index, 1)}
+  >
+    <Text style={[
+      pixelPerfectStyles.lookupCellText,
+      item.dose === 0 && index > 0 && pixelPerfectStyles.placeholderText
+    ]}>
+      {item.dose !== 0 || index === 0 ? item.dose : "Tap to add"}
+    </Text>
+  </Pressable>
+)}
+
   </View>
 ))}
               </ScrollView>
