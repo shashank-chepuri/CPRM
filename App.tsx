@@ -414,6 +414,7 @@ const HomeScreen = ({ navigation }: { navigation: any }) => {
 
           // Parse CPS if format matches
           const cpsMatch = decoded.match(/Cnts:(\d+)!/);
+          
           if (cpsMatch) {
             setRadiationValue(cpsMatch[1]);
           }
@@ -501,6 +502,8 @@ const HomeScreen = ({ navigation }: { navigation: any }) => {
   );
 };
 
+// --- Radiation Screen ---
+// --- Radiation Screen ---
 // --- Radiation Screen ---
 const RadiationScreen = ({ navigation }: { navigation: any }) => {
   const {
@@ -600,18 +603,16 @@ const RadiationScreen = ({ navigation }: { navigation: any }) => {
     }
   }, [showCalibrationEdit, tempCalibrationFactor]);
 
-  // Initialize lookup data with calibration table
   // Initialize lookup data with calibration table plus 2 empty rows
-useEffect(() => {
-  if (showLookupTable) {
-    // Create a copy of the current mapping and add 2 empty rows at the end
-    const extendedData = [...cpsToDoseMap];
-    for (let i = 0; i < 2; i++) {
-      extendedData.push({ cps: 0, dose: 0 });
+  useEffect(() => {
+    if (showLookupTable) {
+      const extendedData = [...cpsToDoseMap];
+      for (let i = 0; i < 2; i++) {
+        extendedData.push({ cps: 0, dose: 0 });
+      }
+      setLookupData(extendedData);
     }
-    setLookupData(extendedData);
-  }
-}, [showLookupTable, cpsToDoseMap]);
+  }, [showLookupTable, cpsToDoseMap]);
 
   // Alarm monitoring
   useEffect(() => {
@@ -643,6 +644,78 @@ useEffect(() => {
       setBlink(false);
     }
   }, [isAlarmActive]);
+
+  // Fixed: Proper time constant averaging
+  useEffect(() => {
+    const cps = parseInt(radiationValue) || 0;
+    
+    if (cps === 0) {
+      setBufferedDose(0);
+      setDisplayDoseRate(0);
+      return;
+    }
+
+    const doseEstimate = getInterpolatedDose(cps, cpsToDoseMap);
+    const { tc } = getTimeConstant(doseEstimate);
+    setCurrentTc(tc);
+    
+    // Proper time constant averaging: store last 'tc' values and average them
+    setCpsBuffer(prevBuffer => {
+      const newBuffer = [...prevBuffer, cps];
+      
+      // Keep exactly 'tc' samples for proper averaging
+      const trimmedBuffer = newBuffer.slice(-tc);
+      
+      // Calculate proper average: sum of last tc values divided by tc
+      if (trimmedBuffer.length === tc) {
+        const sum = trimmedBuffer.reduce((a, b) => a + b, 0);
+        const avgCps = sum / tc; // This is the proper average over tc seconds
+        
+        const dose = getInterpolatedDose(avgCps, cpsToDoseMap) * calibrationFactor;
+        setBufferedDose(dose);
+      } else if (trimmedBuffer.length > 0) {
+        // If we don't have full tc samples yet, use available samples
+        const sum = trimmedBuffer.reduce((a, b) => a + b, 0);
+        const avgCps = sum / trimmedBuffer.length;
+        const dose = getInterpolatedDose(avgCps, cpsToDoseMap) * calibrationFactor;
+        setBufferedDose(dose);
+      }
+      
+      return trimmedBuffer;
+    });
+  }, [radiationValue, calibrationFactor, cpsToDoseMap]);
+
+  // Display update
+  useEffect(() => {
+    const id = setInterval(() => {
+      const now = Date.now();
+      const requiredInterval = bufferedDose <= 1000 ? 4000 : 2000;
+      if (now - lastUpdateRef.current >= requiredInterval) { 
+        setDisplayDoseRate(bufferedDose); 
+        lastUpdateRef.current = now; 
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [bufferedDose]);
+
+  // Cum dose logging
+  useEffect(() => {
+    const now = Date.now();
+    if (now - lastCumDoseUpdateRef.current >= currentTc * 1000) {
+      lastCumDoseUpdateRef.current = now;
+      let inc = 0;
+      if (autoManualMode === 'Auto' || isManualDoseActive) {
+        inc = (bufferedDose / 3600) * currentTc;
+        setCumulativeDose(prev => prev + inc);
+      }
+      const newCD = cumulativeDose + inc;
+      const logNow = new Date();
+      const rtc = `${logNow.getFullYear()}${String(logNow.getMonth() + 1).padStart(2, '0')}${String(logNow.getDate()).padStart(2, '0')},${String(logNow.getHours()).padStart(2, '0')}${String(logNow.getMinutes()).padStart(2, '0')}${String(logNow.getSeconds()).padStart(2, '0')}`;
+      const entry = { rtc, cps: parseInt(radiationValue) || 0, doseRate: bufferedDose, cumDose: newCD, alert: bufferedDose >= alarmSetPoint ? 'ALARM' : 'NORMAL' };
+      setLogData(prev => [...prev.slice(-999), entry]);
+    }
+    setInterpolatedDose(bufferedDose);
+  }, [bufferedDose, currentTc, autoManualMode, isManualDoseActive, cumulativeDose, radiationValue, alarmSetPoint]);
 
   const exportData = async (logData: any[]) => {
     try {
@@ -711,24 +784,19 @@ useEffect(() => {
     setEditValue('');
   };
 
-const handleSetLookupTable = async () => {
-  // Use functional update to ensure we have the freshest state
-  setCpsToDoseMap(prev => {
-    const filteredData = lookupData.filter((item, index) => 
-      index === 0 || item.cps !== 0 || item.dose !== 0
-    );
-    return [...filteredData];
-  });
+  const handleSetLookupTable = async () => {
+    setCpsToDoseMap(prev => {
+      const filteredData = lookupData.filter((item, index) => 
+        index === 0 || item.cps !== 0 || item.dose !== 0
+      );
+      return [...filteredData];
+    });
 
-  // 🔥 Save immediately after updating
-  await saveSettings();
-
-  Alert.alert("Calibration Updated", "The new CPS to Dose mapping has been applied");
-  setShowLookupTable(false);
-  setShowPrgMenu(true);
-};
-
-
+    await saveSettings();
+    Alert.alert("Calibration Updated", "The new CPS to Dose mapping has been applied");
+    setShowLookupTable(false);
+    setShowPrgMenu(true);
+  };
 
   // Arrow Up
   const handleUpArrow = () => {
@@ -818,125 +886,124 @@ const handleSetLookupTable = async () => {
     if (!showPrgMenu) { setSelectedOption(0); setVisibleOptions(4); }
   };
 
- const handleEntSrtPress = () => {
-  ReactNativeHapticFeedback.trigger("impactHeavy");
+  const handleEntSrtPress = () => {
+    ReactNativeHapticFeedback.trigger("impactHeavy");
 
-  // Handle calibration digit selection
-  if (showCalibrationEdit) {
-    if (selectedDigitIndex < 2) {
-      setSelectedDigitIndex(selectedDigitIndex + 1);
-    } else {
-      setSelectedDigitIndex(0);
-    }
-    return;
-  }
-
-  // Menu selections
-  if (showAlarmSetPoint) { 
-    setTempAlarmSetPoint(alarmSetPointOptions[alarmSetPointIndex]); 
-    setShowAlarmSetPoint(false); 
-    setShowPrgMenu(true); 
-    return; 
-  }
-  if (showUnitSelect) { 
-    setTempUnit(unitOptions[unitIndex]); 
-    setShowUnitSelect(false); 
-    setShowPrgMenu(true); 
-    return; 
-  }
-  if (showCumDoseReset) { 
-    if (cumDoseResetIndex === 0) setCumulativeDose(0); 
-    setShowCumDoseReset(false); 
-    setShowPrgMenu(true); 
-    return; 
-  }
-  if (showCumDoseModeSelect) { 
-    setTempCumDoseMode(cumDoseModeIndex === 0 ? "Auto" : "Manual"); 
-    setShowCumDoseModeSelect(false); 
-    setShowPrgMenu(true); 
-    return; 
-  }
-  if (showSaveConfirmation) { 
-    setShowSaveConfirmation(false); 
-    return; 
-  }
-  if (showLookupTable) return;
-
-  // Manual Mode logic
-  if (autoManualMode === 'Manual' && !showPrgMenu) {
-    if (!isManualDoseActive) {
-      if (manualButtonState === 'restart') {
-        setCumulativeDose(0);
+    // Handle calibration digit selection
+    if (showCalibrationEdit) {
+      if (selectedDigitIndex < 2) {
+        setSelectedDigitIndex(selectedDigitIndex + 1);
+      } else {
+        setSelectedDigitIndex(0);
       }
-      setIsManualDoseActive(true);
-      setManualButtonState('stop');
-    } else {
-      setCumulativeDose(0);
-      setIsManualDoseActive(true);
+      return;
     }
-    return;
-  }
 
-  // ✅ Allow ENT/SRT to work *only if PRG menu is open*
-  if (showPrgMenu) {
-    switch (selectedOption) {
-      case 0:
-        setShowUnitSelect(true);
-        setShowPrgMenu(false);
-        setUnitIndex(unitOptions.indexOf(tempUnit));
-        break;
-      case 1:
-        setShowAlarmSetPoint(true);
-        setShowPrgMenu(false);
-        const closestIndex = alarmSetPointOptions.reduce(
-          (prev, curr, index) =>
-            Math.abs(curr - tempAlarmSetPoint) <
-            Math.abs(alarmSetPointOptions[prev] - tempAlarmSetPoint)
-              ? index
-              : prev,
-          0
-        );
-        setAlarmSetPointIndex(closestIndex);
-        break;
-      case 2:
-        setShowCalibrationEdit(true);
-        setShowPrgMenu(false);
-        break;
-      case 3:
-        setShowCumDoseReset(true);
-        setShowPrgMenu(false);
-        break;
-      case 4:
-        setShowCumDoseModeSelect(true);
-        setShowPrgMenu(false);
-        setCumDoseModeIndex(tempCumDoseMode === 'Auto' ? 0 : 1);
-        break;
-      case 5:
-        setShowLookupTable(true);
-        setShowPrgMenu(false);
-        break;
-      case 6:
-        exportData(logData);
-        setShowPrgMenu(false);
-        break;
-      case 7:
-        setSelectedUnit(tempUnit);
-        setAlarmSetPoint(tempAlarmSetPoint);
-        setCalibrationFactor(tempCalibrationFactor);
-        setAutoManualMode(tempCumDoseMode);
-        setShowPrgMenu(false);
-        setShowSaveConfirmation(true);
-        // Save settings when parameters are saved
-        saveSettings();
-        break;
-      default:
-        Alert.alert(PRG_OPTIONS[selectedOption], 'Not implemented.');
+    // Menu selections
+    if (showAlarmSetPoint) { 
+      setTempAlarmSetPoint(alarmSetPointOptions[alarmSetPointIndex]); 
+      setShowAlarmSetPoint(false); 
+      setShowPrgMenu(true); 
+      return; 
     }
-  }
+    if (showUnitSelect) { 
+      setTempUnit(unitOptions[unitIndex]); 
+      setShowUnitSelect(false); 
+      setShowPrgMenu(true); 
+      return; 
+    }
+    if (showCumDoseReset) { 
+      if (cumDoseResetIndex === 0) setCumulativeDose(0); 
+      setShowCumDoseReset(false); 
+      setShowPrgMenu(true); 
+      return; 
+    }
+    if (showCumDoseModeSelect) { 
+      setTempCumDoseMode(cumDoseModeIndex === 0 ? "Auto" : "Manual"); 
+      setShowCumDoseModeSelect(false); 
+      setShowPrgMenu(true); 
+      return; 
+    }
+    if (showSaveConfirmation) { 
+      setShowSaveConfirmation(false); 
+      return; 
+    }
+    if (showLookupTable) return;
 
-  // ❌ Do nothing if no menu and no manual logic
-};
+    // Manual Mode logic
+    if (autoManualMode === 'Manual' && !showPrgMenu) {
+      if (!isManualDoseActive) {
+        if (manualButtonState === 'restart') {
+          setCumulativeDose(0);
+        }
+        setIsManualDoseActive(true);
+        setManualButtonState('stop');
+      } else {
+        setCumulativeDose(0);
+        setIsManualDoseActive(true);
+      }
+      return;
+    }
 
+    // ✅ Allow ENT/SRT to work *only if PRG menu is open*
+    if (showPrgMenu) {
+      switch (selectedOption) {
+        case 0:
+          setShowUnitSelect(true);
+          setShowPrgMenu(false);
+          setUnitIndex(unitOptions.indexOf(tempUnit));
+          break;
+        case 1:
+          setShowAlarmSetPoint(true);
+          setShowPrgMenu(false);
+          const closestIndex = alarmSetPointOptions.reduce(
+            (prev, curr, index) =>
+              Math.abs(curr - tempAlarmSetPoint) <
+              Math.abs(alarmSetPointOptions[prev] - tempAlarmSetPoint)
+                ? index
+                : prev,
+            0
+          );
+          setAlarmSetPointIndex(closestIndex);
+          break;
+        case 2:
+          setShowCalibrationEdit(true);
+          setShowPrgMenu(false);
+          break;
+        case 3:
+          setShowCumDoseReset(true);
+          setShowPrgMenu(false);
+          break;
+        case 4:
+          setShowCumDoseModeSelect(true);
+          setShowPrgMenu(false);
+          setCumDoseModeIndex(tempCumDoseMode === 'Auto' ? 0 : 1);
+          break;
+        case 5:
+          setShowLookupTable(true);
+          setShowPrgMenu(false);
+          break;
+        case 6:
+          exportData(logData);
+          setShowPrgMenu(false);
+          break;
+        case 7:
+          setSelectedUnit(tempUnit);
+          setAlarmSetPoint(tempAlarmSetPoint);
+          setCalibrationFactor(tempCalibrationFactor);
+          setAutoManualMode(tempCumDoseMode);
+          setShowPrgMenu(false);
+          setShowSaveConfirmation(true);
+          // Save settings when parameters are saved
+          saveSettings();
+          break;
+        default:
+          Alert.alert(PRG_OPTIONS[selectedOption], 'Not implemented.');
+      }
+    }
+
+    // ❌ Do nothing if no menu and no manual logic
+  };
 
   const handleExtStpPress = () => {
     ReactNativeHapticFeedback.trigger("impactMedium");
@@ -978,51 +1045,6 @@ const handleSetLookupTable = async () => {
       setShowPrgMenu(false); 
     }
   };
-
-  // Dose calculation
-  useEffect(() => {
-    const cps = parseInt(radiationValue) || 0;
-    const doseEstimate = getInterpolatedDose(cps, cpsToDoseMap);
-    const { tc } = getTimeConstant(doseEstimate);
-    setCurrentTc(tc);
-    const newBuffer = [...cpsBuffer, cps].slice(-tc);
-    const avgCps = newBuffer.reduce((a, b) => a + b, 0) / newBuffer.length;
-    const dose = getInterpolatedDose(avgCps, cpsToDoseMap) * calibrationFactor;
-    setCpsBuffer(newBuffer); 
-    setBufferedDose(dose);
-  }, [radiationValue, calibrationFactor, cpsToDoseMap]);
-
-  // Display update
-  useEffect(() => {
-    const id = setInterval(() => {
-      const now = Date.now();
-      const requiredInterval = bufferedDose <= 1000 ? 4000 : 2000;
-      if (now - lastUpdateRef.current >= requiredInterval) { 
-        setDisplayDoseRate(bufferedDose); 
-        lastUpdateRef.current = now; 
-      }
-    }, 1000);
-    return () => clearInterval(id);
-  }, [bufferedDose]);
-
-  // Cum dose logging
-  useEffect(() => {
-    const now = Date.now();
-    if (now - lastCumDoseUpdateRef.current >= currentTc * 1000) {
-      lastCumDoseUpdateRef.current = now;
-      let inc = 0;
-      if (autoManualMode === 'Auto' || isManualDoseActive) {
-        inc = (bufferedDose / 3600) * currentTc;
-        setCumulativeDose(prev => prev + inc);
-      }
-      const newCD = cumulativeDose + inc;
-      const logNow = new Date();
-      const rtc = `${logNow.getFullYear()}${String(logNow.getMonth() + 1).padStart(2, '0')}${String(logNow.getDate()).padStart(2, '0')},${String(logNow.getHours()).padStart(2, '0')}${String(logNow.getMinutes()).padStart(2, '0')}${String(logNow.getSeconds()).padStart(2, '0')}`;
-      const entry = { rtc, cps: parseInt(radiationValue) || 0, doseRate: bufferedDose, cumDose: newCD, alert: bufferedDose >= alarmSetPoint ? 'ALARM' : 'NORMAL' };
-      setLogData(prev => [...prev.slice(-999), entry]);
-    }
-    setInterpolatedDose(bufferedDose);
-  }, [bufferedDose, currentTc, autoManualMode, isManualDoseActive, cumulativeDose, radiationValue, alarmSetPoint]);
 
   return (
     <View style={pixelPerfectStyles.container}>
@@ -1083,58 +1105,57 @@ const handleSetLookupTable = async () => {
               </View>
               <ScrollView style={pixelPerfectStyles.lookupScroll}>
                 {lookupData.map((item, index) => (
-  <View key={index} style={pixelPerfectStyles.lookupRow}>
-    {editingCell?.row === index && editingCell.col === 0 ? (
-      <TextInput
-        style={pixelPerfectStyles.lookupInput}
-        value={editValue}
-        onChangeText={handleLookupEditChange}
-        onBlur={handleLookupEditComplete}
-        keyboardType="numeric"
-        autoFocus
-      />
-    ) : (
-      <Pressable 
-        style={pixelPerfectStyles.lookupCell}
-        onPress={() => handleLookupCellPress(index, 0)}
-      >
-        <Text style={[
-          pixelPerfectStyles.lookupCellText,
-          item.cps === 0 && index > 0 && pixelPerfectStyles.placeholderText
-        ]}>
-          {item.cps !== 0 || index === 0 ? item.cps : "Tap to add"}
-        </Text>
-      </Pressable>
-    )}
-    
-    {editingCell?.row === index && editingCell.col === 1 ? (
-  <TextInput
-    style={pixelPerfectStyles.lookupInput}
-    value={String(item.dose)}
-    onChangeText={(text) => {
-      const updated = [...lookupData];
-      updated[index].dose = Number(text) || 0;
-      setLookupData(updated); // 🔥 updates immediately
-    }}
-    keyboardType="numeric"
-    autoFocus
-  />
-) : (
-  <Pressable 
-    style={pixelPerfectStyles.lookupCell}
-    onPress={() => handleLookupCellPress(index, 1)}
-  >
-    <Text style={[
-      pixelPerfectStyles.lookupCellText,
-      item.dose === 0 && index > 0 && pixelPerfectStyles.placeholderText
-    ]}>
-      {item.dose !== 0 || index === 0 ? item.dose : "Tap to add"}
-    </Text>
-  </Pressable>
-)}
-
-  </View>
-))}
+                  <View key={index} style={pixelPerfectStyles.lookupRow}>
+                    {editingCell?.row === index && editingCell.col === 0 ? (
+                      <TextInput
+                        style={pixelPerfectStyles.lookupInput}
+                        value={editValue}
+                        onChangeText={handleLookupEditChange}
+                        onBlur={handleLookupEditComplete}
+                        keyboardType="numeric"
+                        autoFocus
+                      />
+                    ) : (
+                      <Pressable 
+                        style={pixelPerfectStyles.lookupCell}
+                        onPress={() => handleLookupCellPress(index, 0)}
+                      >
+                        <Text style={[
+                          pixelPerfectStyles.lookupCellText,
+                          item.cps === 0 && index > 0 && pixelPerfectStyles.placeholderText
+                        ]}>
+                          {item.cps !== 0 || index === 0 ? item.cps : "Tap to add"}
+                        </Text>
+                      </Pressable>
+                    )}
+                    
+                    {editingCell?.row === index && editingCell.col === 1 ? (
+                      <TextInput
+                        style={pixelPerfectStyles.lookupInput}
+                        value={String(item.dose)}
+                        onChangeText={(text) => {
+                          const updated = [...lookupData];
+                          updated[index].dose = Number(text) || 0;
+                          setLookupData(updated);
+                        }}
+                        keyboardType="numeric"
+                        autoFocus
+                      />
+                    ) : (
+                      <Pressable 
+                        style={pixelPerfectStyles.lookupCell}
+                        onPress={() => handleLookupCellPress(index, 1)}
+                      >
+                        <Text style={[
+                          pixelPerfectStyles.lookupCellText,
+                          item.dose === 0 && index > 0 && pixelPerfectStyles.placeholderText
+                        ]}>
+                          {item.dose !== 0 || index === 0 ? item.dose : "Tap to add"}
+                        </Text>
+                      </Pressable>
+                    )}
+                  </View>
+                ))}
               </ScrollView>
               <Pressable 
                 style={pixelPerfectStyles.setButton}
@@ -1195,17 +1216,16 @@ const handleSetLookupTable = async () => {
           <>
             <Text style={pixelPerfectStyles.modeText}>Cum Dose Mode: {autoManualMode}</Text>
             {/* Alarm status */}
-              <Text style={[
-                pixelPerfectStyles.modeText,
-                isAlarmActive && pixelPerfectStyles.modeText,
-                blink && { opacity: 0.5 }
-              ]}>
-                {isAlarmActive ? 'ALARM!' : 'NORMAL'}
-              </Text>
+            <Text style={[
+              pixelPerfectStyles.modeText,
+              isAlarmActive && pixelPerfectStyles.modeText,
+              blink && { opacity: 0.5 }
+            ]}>
+              {isAlarmActive ? 'ALARM!' : 'NORMAL'}
+            </Text>
             <View style={pixelPerfectStyles.doseDisplay}>
               <Text style={pixelPerfectStyles.doseRate}>{formatDose(displayDoseRate, selectedUnit, parseInt(radiationValue))}</Text>
               <Text style={pixelPerfectStyles.cumulativeDose}>{formatDose(cumulativeDose, selectedUnit, parseInt(radiationValue)).replace(/\/h$/, '')}</Text>
-              
             </View>
           </>
         )}
